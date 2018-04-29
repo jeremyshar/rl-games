@@ -88,15 +88,81 @@ class TicTacToe(object):
 					stack[i][j][1] = 1.0
 		return stack
 
+
+	# Looks up an element in the board element by a flattened index.
+	# [0 1 2]
+	# [3 4 5]
+	# [6 7 8]
+	def flat_lookup(self, index):
+		return self.board[index//self.board_size][index%self.board_size][0]
+
+	# Convenience function to represent the current state as features. We construct
+	# features for each potential move (legal or not), and the model should share
+	# its weights. The features are player agnostic, based on who's to move.
+	# 0: Whether the space is the center.
+	# 1: Whether the space is a corner.
+	# 2: Whether the space is an edge.
+	# 3: Whether the space completes a 3-in-a-row for the current player.
+	# 4: Whether the space blocks a 2 of the opponent.
+	# 5: Whether the space creates a 2 for the current player.
+	# 6: Whether the space creates multiple 2s for the current player.
+	# 7: Whether the space blocks multiple 1s for the opponent.
+	def make_features(self):
+		space_mapping = {
+			0: [(1, 2), (3, 6), (4, 8)],
+			1: [(0, 2), (4, 7)],
+			2: [(0, 1), (5, 8), (4, 6)],
+			3: [(4, 5), (0, 6)],
+			4: [(3, 5), (1, 7), (0, 8), (2, 6)],
+			5: [(3, 4), (2, 8)],
+			6: [(7, 8), (0, 3), (2, 4)],
+			7: [(6, 8), (1, 4)],
+			8: [(6, 7), (2, 5), (0, 4)]
+		}
+		current = 'X' if self.first_player_to_move else 'O'
+		features = np.zeros([9, 8])
+		for space in range(9):
+			if space == 4:
+				features[space][0] = 1.0
+			elif space in [0, 2, 6, 8]:
+				features[space][1] = 1.0
+			else:
+				features[space][2] = 1.0
+			twos_created = 0
+			ones_blocked = 0
+			for pair in space_mapping[space]:
+				a = self.flat_lookup(pair[0])
+				b = self.flat_lookup(pair[1])
+				if a == b and a == current:
+					features[space][3] = 1.0
+				if a == b and a != self.empty and a != current:
+					features[space][4] = 1.0
+				if a == current and b == self.empty:
+					twos_created += 1
+				if b == current and a == self.empty:
+					twos_created += 1
+				if a != current and a != self.empty and b == self.empty:
+					ones_blocked += 1
+				if b != current and b != self.empty and a == self.empty:
+					ones_blocked += 1
+			if twos_created > 0:
+				features[space][5] = 1.0
+			if twos_created > 1:
+				features[space][6] = 1.0
+			if ones_blocked > 1:
+				features[space][7] = 1.0
+		return features
+
+
 # Infinite loop of play against an agent.
-def interactive_play(g, agent):
+def interactive_play(g, agent, print_features=False):
 	game = 0
 	while True:
 		g.reset()
 		a_to_move = game % 2 == 0
 		print 'New game!', 'Agent moves first.' if a_to_move else 'You move first.'
 		while not g.is_game_over():
-			move = agent.select_move(print_policy=True) if a_to_move else raw_input('Select a move:')
+			move = agent.select_move() if a_to_move else raw_input('Select a move:')
 			try:
 				move = int(move)
 			except:
@@ -106,6 +172,8 @@ def interactive_play(g, agent):
 				g.make_move(move)
 				a_to_move = not a_to_move
 				g.print_board()
+				if print_features:
+					print g.make_features()
 				print
 		game += 1
 		if g.winner == '_':
@@ -158,4 +226,3 @@ def play_match(g, agent_a, agent_b, num_games, print_games=False, print_results=
 		print overall_results
 		print results_breakdown
 	return overall_results, results_breakdown
-	
