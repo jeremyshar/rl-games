@@ -42,7 +42,7 @@ class GameNode(object):
 			if self.game.is_game_over():
 				outcome = self.game.value_mapping[self.game.winner]
 			else:
-				outcome = self.model.value(self.game.transform_state())
+				outcome = self.model.value(self.game.transform_state() if not use_features else self.game.make_features())
 			self.backup(outcome, rollout_depth-remaining_depth)
 		else:
 			self.expand()
@@ -53,7 +53,7 @@ class GameNode(object):
 			scores = [(multiplier*x[1])+(self.c_puct*np.sqrt(total_visits)*x[3]/(1+x[2])) for x in stats]
 			selected_move = stats[np.argmax(scores)][0]
 			if self.opponent is not None and self.opponent_to_move:
-				self.selected_move = self.opponent.select_move()
+				selected_move = self.opponent.select_move()
 			self.game.make_move(selected_move)
 			self.children[selected_move].rollout(rollout_depth, remaining_depth-1, use_features)
 
@@ -67,6 +67,9 @@ class GameNode(object):
 			for c in sorted(self.children):
 				print 'Move:', c, 'Visit Count:', self.children[c].visit_count, 'Average Outcome:', self.children[c].average_outcome, 'Prob:', prob_dict[c]
 		return prob_dict
+
+	def get_visit_counts(self):
+		return {child: self.children[child].visit_count for child in self.children}
 
 class NeuralNetModel(object):
 	def __init__(self, game, sess):
@@ -177,22 +180,30 @@ class FeatureModel(object):
 	def __init__(self, game, sess):
 		self.game = game
 		self.sess = sess
-		self.train_op, self.policy_op, self.target_policy, self.state_op, self.weights, self.biases = self.build_model()
+		self.train_op, self.policy_op, self.target_policy, self.value_op, self.target_value, self.state_op, self.weights, self.biases = self.build_model()
 		self.sess.run(tf.global_variables_initializer())
 
 	def build_model(self):
-		batch = tf.placeholder(dtype=tf.float32, shape=[None, 9, 8])
+		batch = tf.placeholder(dtype=tf.float32, shape=[None, 9, 9])
 		target_policies = tf.placeholder(dtype=tf.float32, shape=[None, 9])
-		weights = tf.get_variable('weights', [8], tf.float32)
+		target_values = tf.placeholder(dtype=tf.float32, shape=[None])
+		weights = tf.get_variable('weights', [9], tf.float32)
 		biases = tf.get_variable('biases', [9], tf.float32)
 		predicted_policies = tf.nn.softmax(tf.squeeze(tf.reduce_sum(batch*weights, axis=2) + biases))
-		loss = tf.reduce_sum(tf.where(tf.greater(target_policies, -1), tf.square(target_policies-predicted_policies), tf.zeros_like(target_policies)))
-		train_op = tf.train.AdamOptimizer(0.01).minimize(loss)
-		return train_op, predicted_policies, target_policies, batch, weights, biases
+		predicted_values = tf.tanh(tf.reduce_sum(batch*weights, axis=[1, 2]))
+		value_loss = tf.reduce_sum(tf.square(target_values-predicted_values))
+		regularization_loss = 0.1*tf.reduce_sum(tf.square(weights))
+		policy_loss = tf.reduce_sum(tf.where(tf.greater(target_policies, -1), tf.square(target_policies-predicted_policies), tf.zeros_like(target_policies)))
+		train_op = tf.train.AdamOptimizer(0.01).minimize(policy_loss+value_loss+regularization_loss)
+		return train_op, predicted_policies, target_policies, predicted_values, target_values, batch, weights, biases
 
 	def policy(self, state):
 		y = self.sess.run(self.policy_op, feed_dict={self.state_op: np.expand_dims(state, 0)})
 		return y
+
+	def value(self, state):
+		v = self.sess.run(self.value_op, feed_dict={self.state_op: np.expand_dims(state, 0)})
+		return v
 
 	def train(self, data, games_per_epoch):
 		state_batches = np.array_split(np.array([x[0] for x in data]), games_per_epoch)
@@ -202,7 +213,8 @@ class FeatureModel(object):
 		for j in range(5):
 			for i in range(len(state_batches)):
 				self.sess.run(self.train_op, feed_dict={self.state_op: state_batches[i], 
-													   self.target_policy: policy_batches[i]})
+													   self.target_policy: policy_batches[i],
+													   self.target_value: value_batches[i]})
 
 
 class TableModel(object):
@@ -253,17 +265,48 @@ class TableModel(object):
 
 
 class RLAgent(object):
-	def __init__(self, name, game, model, is_feature_model=False):
+	def __init__(self, name, game, model, is_feature_model=False, inference_rollout_depth=0, inference_num_rollouts=0):
 		self.name = name
 		self.game = game
 		self.model = model
 		self.use_features = is_feature_model
+		self.rollout_depth = inference_rollout_depth
+		self.num_rollouts = inference_num_rollouts
 
 
-	def select_move(self, print_policy=False):
+	def select_move(self, print_debug=False):
+		if self.rollout_depth > 0 and self.num_rollouts > 0:
+			tree = GameNode(None, self.game, self.model, 0.25, 10.0, None, False)
+			for _ in range(self.num_rollouts):
+				tree.rollout(self.rollout_depth, self.rollout_depth, self.use_features)
+			move_vals = tree.get_probabilities()
+			if print_debug:
+				counts = tree.get_visit_counts()
+				probs = tree.get_probabilities()
+				policy = self.model.policy(self.game.transform_state())
+				separator = '-'*(6*9)
+				blank = '////|'
+				move_str =   '   move |'
+				policy_str = ' policy |'
+				prob_str =   '  probs |' 
+				count_str =  ' visits |'
+				value_str =  '  value |' + '{:3.2f}'.format(self.model.value(self.game.transform_state()))
+				for i in range(9):
+					move_str += '{:4d}|'.format(i)
+					policy_str += blank if i not in probs else '{:4.2f}|'.format(policy[i])
+					prob_str += blank if i not in probs else '{:4.2f}|'.format(probs[i])
+					count_str += blank if i not in probs else '{:4d}|'.format(counts[i])
+				print separator
+				print move_str
+				print policy_str
+				print count_str
+				print prob_str
+				print separator
+				print value_str
+		else:
+			move_vals = self.model.policy(self.game.transform_state() if not self.use_features else self.game.make_features())
 		legal_moves = self.game.legal_moves()
-		move_vals = self.model.policy(self.game.transform_state() if not self.use_features else self.game.make_features())
-		if print_policy:
+		if print_debug and self.rollout_depth == 0 and self.num_rollouts == 0:
 			self.game.print_board()
 			print 'Policy Probabilities', move_vals
 		best_move = -1
@@ -292,11 +335,12 @@ class RLAgent(object):
 				opponent_to_move = not opponent_to_move
 				self.game.make_move(selected_move)
 				tree = tree.children[selected_move]
-			outcome = self.game.value_mapping[self.game.winner]
+			outcome = -1.0*abs(self.game.value_mapping[self.game.winner])
 			tree = tree.parent
 			while tree is not None:
 				self.game.undo_move()
 				opponent_to_move = not opponent_to_move
+				outcome = -1.0*outcome
 				# Set the illegal move probs to -1.
 				probs = -1*np.ones([self.game.board_size**2])
 				legal_probs = tree.get_probabilities()
@@ -308,23 +352,22 @@ class RLAgent(object):
 				data.append((self.game.transform_state() if not self.use_features else self.game.make_features(), outcome, probs))
 		return data
 
-	def train(self, num_epochs, games_per_epoch, rollouts_per_move, rollout_depth):
+	def train(self, num_epochs, games_per_epoch, rollouts_per_move, rollout_depth, evaluator):
 		random = agent_lib.RandomAgent('Random', self.game)
 		dumb = agent_lib.DumbAgent('Dumb', self.game)
-		minimax = agent_lib.MinimaxAgent('Minimax', self.game)
-		starting_t = 2
-		final_t = 0.5
-		starting_c_puct = 3.0
-		final_c_puct = 0.5
+		#starting_t = 2
+		#final_t = 0.5
+		#starting_c_puct = 3.0
+		#final_c_puct = 0.5
 		for epoch in range(num_epochs):
 			print "Epoch", epoch+1, "of", num_epochs
-			t = starting_t - (1+epoch)*((starting_t - final_t)/num_epochs)
-			c_puct = starting_c_puct - (1+epoch)*((starting_c_puct - final_c_puct)/num_epochs)
+			t = 0.5#starting_t - (1+epoch)*((starting_t - final_t)/num_epochs)
+			c_puct = 10.0#starting_c_puct - (1+epoch)*((starting_c_puct - final_c_puct)/num_epochs)
 			print 't is', t, ', c_puct is', c_puct
-			game_lib.play_match(self.game, self, random, 1000)
-			game_lib.play_match(self.game, self, dumb, 2)
-			game_lib.play_match(self.game, self, minimax, 2)
-			game_lib.play_match(self.game, self, self, 2)
+			game_lib.play_match(self.game, self, random, 10, evaluator=evaluator)
+			game_lib.play_match(self.game, self, dumb, 2, evaluator=evaluator)
+			game_lib.play_match(self.game, self, evaluator, 2, evaluator=evaluator)
+			game_lib.play_match(self.game, self, self, 2, evaluator=evaluator)
 			data = self.generate_data(games_per_epoch, rollouts_per_move, rollout_depth, t, c_puct, opponent=None, use_opponent_for_mcts=False)
 			np.random.shuffle(data)
 			self.model.train(data, games_per_epoch)
@@ -333,23 +376,21 @@ class RLAgent(object):
 			
 
 def main():
-	with tf.Graph().as_default():
-		with tf.Session() as sess:
-			g = game_lib.TicTacToe(3, 3)
-			a = agent_lib.RandomAgent('Random', g)
-			b = agent_lib.DumbAgent('Dumb', g)
-			c = agent_lib.MinimaxAgent('Minimax', g)
-			rl = RLAgent('RL', g, FeatureModel(g, sess), is_feature_model=True)
-			rl.train(10, 300, 30, 9)
-			print "Match with RandomAgent"
-			game_lib.play_match(g, rl, a, 1000, False)
-			print "Match with DumbAgent"
-			game_lib.play_match(g, rl, b, 2, False)
-			print "Match with MinimaxAgent"
-			game_lib.play_match(g, rl, c, 2, False)
-			print "Match with self"
-			game_lib.play_match(g, rl, rl, 2, False)
-			print "Match with you!"
-			game_lib.interactive_play(g, rl)
+	g = game_lib.TicTacToe(3, 3)
+	a = agent_lib.RandomAgent('Random', g)
+	b = agent_lib.DumbAgent('Dumb', g)
+	c = agent_lib.MinimaxAgent('Minimax', g)
+	rl = RLAgent('RL', g, TableModel(), inference_rollout_depth=7, inference_num_rollouts=400)
+	rl.train(4, 250, 400, 9, c)
+	print "Match with RandomAgent"
+	game_lib.play_match(g, rl, a, 1000, False, print_a_losses=True, evaluator=c)
+	print "Match with DumbAgent"
+	game_lib.play_match(g, rl, b, 2, False, evaluator=c)
+	print "Match with MinimaxAgent"
+	game_lib.play_match(g, rl, c, 100, False, print_a_losses=True, evaluator=c)
+	print "Match with self"
+	game_lib.play_match(g, rl, rl, 2, False, evaluator=c)
+	print "Match with you!"
+	game_lib.interactive_play(g, rl)
 
 main()

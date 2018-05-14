@@ -107,6 +107,7 @@ class TicTacToe(object):
 	# 5: Whether the space creates a 2 for the current player.
 	# 6: Whether the space creates multiple 2s for the current player.
 	# 7: Whether the space blocks multiple 1s for the opponent.
+	# 8: Whether the space is occupied.
 	def make_features(self):
 		space_mapping = {
 			0: [(1, 2), (3, 6), (4, 8)],
@@ -120,7 +121,7 @@ class TicTacToe(object):
 			8: [(6, 7), (2, 5), (0, 4)]
 		}
 		current = 'X' if self.first_player_to_move else 'O'
-		features = np.zeros([9, 8])
+		features = np.zeros([9, 9])
 		for space in range(9):
 			if space == 4:
 				features[space][0] = 1.0
@@ -128,6 +129,8 @@ class TicTacToe(object):
 				features[space][1] = 1.0
 			else:
 				features[space][2] = 1.0
+			if self.flat_lookup(space) == '_':
+				features[space][8] = 1.0
 			twos_created = 0
 			ones_blocked = 0
 			for pair in space_mapping[space]:
@@ -153,19 +156,24 @@ class TicTacToe(object):
 				features[space][7] = 1.0
 		return features
 
-
 # Infinite loop of play against an agent.
-def interactive_play(g, agent, print_features=False):
+def interactive_play(g, agent, print_features=False, print_policy=True, print_value=True):
 	game = 0
 	while True:
 		g.reset()
 		a_to_move = game % 2 == 0
 		print 'New game!', 'Agent moves first.' if a_to_move else 'You move first.'
 		while not g.is_game_over():
-			move = agent.select_move() if a_to_move else raw_input('Select a move:')
+			move = agent.select_move(print_debug=True) if a_to_move else raw_input('Select a move:')
 			try:
 				move = int(move)
 			except:
+				if move in ['q', 'quit']:
+					return
+				if move in ['r', 'resign']:
+					g.winner = 'resignation'
+					a_to_move = False
+					break
 				print 'Please input a valid legal index.'
 				continue
 			if move in g.legal_moves():
@@ -185,7 +193,14 @@ def interactive_play(g, agent, print_features=False):
 				print agent.name, 'wins!'
 
 # Runs a match between two agents.
-def play_match(g, agent_a, agent_b, num_games, print_games=False, print_results=True):
+def play_match(g, 
+			   agent_a, 
+			   agent_b, 
+			   num_games, 
+			   print_games=False, 
+			   print_results=True, 
+			   print_a_losses=False, 
+			   evaluator=None):
 	results = {agent_a.name : 0, 
 			   agent_b.name : 0, 
 			   "Draws" : 0}
@@ -194,6 +209,11 @@ def play_match(g, agent_a, agent_b, num_games, print_games=False, print_results=
 			   agent_a.name+'-X':0,
 			   agent_b.name+'-O':0, 
 			   agent_b.name+'-X':0}
+	if evaluator is not None:
+		optimality = {agent_a.name+'_optimal': 0,
+					  agent_a.name+'_suboptimal': 0, 
+					  agent_b.name+'_optimal': 0, 
+					  agent_b.name+'_suboptimal': 0}
  	for game in range(num_games):
 		g.reset()
 		a_to_move = game % 2 == 0
@@ -201,8 +221,17 @@ def play_match(g, agent_a, agent_b, num_games, print_games=False, print_results=
 			x = agent_a.name if a_to_move else agent_b.name
 			o = agent_b.name if a_to_move else agent_a.name
 			print x, 'is playing as X - ', o, 'is playing as O'
+		moves = []
 		while not g.is_game_over():
 			move = agent_a.select_move() if a_to_move else agent_b.select_move()
+			if evaluator is not None:
+				optimal_moves = evaluator.optimal_moves()
+				key_prefix = agent_a.name if a_to_move else agent_b.name
+				if move in optimal_moves:
+					optimality[key_prefix+'_optimal'] += 1
+				else:
+					optimality[key_prefix+'_suboptimal'] += 1
+			moves.append(move)
 			g.make_move(move)
 			a_to_move = not a_to_move
 			if print_games:
@@ -213,6 +242,9 @@ def play_match(g, agent_a, agent_b, num_games, print_games=False, print_results=
 		else:
 			if a_to_move:
 				winning_agent = agent_b.name
+				if print_a_losses:
+					print agent_a.name, 'lost! Game:'
+					print moves
 			else:
 				winning_agent = agent_a.name
 			results[winning_agent] += 1
@@ -225,4 +257,6 @@ def play_match(g, agent_a, agent_b, num_games, print_games=False, print_results=
 		print 'Results for', num_games, 'game match between', agent_a.name, 'and', agent_b.name + ':'
 		print overall_results
 		print results_breakdown
+		if evaluator is not None:
+			print optimality
 	return overall_results, results_breakdown
