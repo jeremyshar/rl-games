@@ -37,7 +37,7 @@ class GameNode(object):
 			self.game.undo_move()
 			self.parent.backup(outcome, remaining_climb-1)
 
-	def rollout(self, rollout_depth, remaining_depth, use_features):
+	def rollout(self, rollout_depth, remaining_depth, use_features, random_rollouts=False):
 		if remaining_depth == 0 or self.game.is_game_over():
 			if self.game.is_game_over():
 				outcome = self.game.value_mapping[self.game.winner]
@@ -46,23 +46,30 @@ class GameNode(object):
 			self.backup(outcome, rollout_depth-remaining_depth)
 		else:
 			self.expand()
-			multiplier = 1.0 if self.game.first_player_to_move else -1.0
-			p_values = self.model.policy(self.game.transform_state() if not use_features else self.game.make_features())
-			stats = [(i, self.children[i].average_outcome, self.children[i].visit_count, p_values[i]) for i in self.children]
-			total_visits = sum([x[2] for x in stats])
-			scores = [(multiplier*x[1])+(self.c_puct*np.sqrt(total_visits)*x[3]/(1+x[2])) for x in stats]
-			selected_move = stats[np.argmax(scores)][0]
+			if random_rollouts:
+				selected_move = np.random.choice(self.children.keys())
+			else:
+				multiplier = 1.0 if self.game.first_player_to_move else -1.0
+				p_values = self.model.policy(self.game.transform_state() if not use_features else self.game.make_features())
+				stats = [(i, self.children[i].average_outcome, self.children[i].visit_count, p_values[i]) for i in self.children]
+				total_visits = sum([x[2] for x in stats])
+				scores = [(multiplier*x[1])+(self.c_puct*np.sqrt(total_visits)*x[3]/(1+x[2])) for x in stats]
+				selected_move = stats[np.argmax(scores)][0]
 			if self.opponent is not None and self.opponent_to_move:
 				selected_move = self.opponent.select_move()
 			self.game.make_move(selected_move)
-			self.children[selected_move].rollout(rollout_depth, remaining_depth-1, use_features)
+			self.children[selected_move].rollout(rollout_depth, remaining_depth-1, use_features, random_rollouts)
 
-	def get_probabilities(self, print_probabilities=False):
-		counts = [(child, self.children[child].visit_count) for child in self.children]
-		numerators = np.power([x[1] for x in counts], 1/self.t)
+	def get_probabilities(self, use_average_values=False, print_probabilities=False,):
+		if use_average_values:
+			f = (lambda x: x+1) if self.game.first_player_to_move else (lambda x: 1-x)
+			vals = [(child, f(self.children[child].average_outcome)) for child in self.children]
+		else:
+			vals = [(child, self.children[child].visit_count) for child in self.children]
+		numerators = np.power([x[1] for x in vals], 1/self.t)
 		denominator = np.sum(numerators)
 		probs = np.divide(numerators, denominator)
-		prob_dict = {counts[i][0]:probs[i] for i in range(len(probs))}
+		prob_dict = {vals[i][0]:probs[i] for i in range(len(probs))}
 		if print_probabilities:
 			for c in sorted(self.children):
 				print 'Move:', c, 'Visit Count:', self.children[c].visit_count, 'Average Outcome:', self.children[c].average_outcome, 'Prob:', prob_dict[c]
@@ -70,6 +77,9 @@ class GameNode(object):
 
 	def get_visit_counts(self):
 		return {child: self.children[child].visit_count for child in self.children}
+
+	def get_average_outcomes(self):
+		return {child: self.children[child].average_outcome for child in self.children}
 
 class NeuralNetModel(object):
 	def __init__(self, game, sess):
@@ -224,7 +234,7 @@ class TableModel(object):
 
 	def lookup(self, state, delete_entry=False):
 		for flip in [False, True]:
-			for rotation_amt in range(3):
+			for rotation_amt in range(4):
 				rotated = np.rot90(state, k=rotation_amt, axes=(2, 1))
 				symmetry = np.fliplr(rotated) if flip else rotated
 				if symmetry.tostring() in self.table:
@@ -265,42 +275,60 @@ class TableModel(object):
 
 
 class RLAgent(object):
-	def __init__(self, name, game, model, is_feature_model=False, inference_rollout_depth=0, inference_num_rollouts=0):
+	def __init__(self, 
+				 name, 
+				 game, 
+				 model, 
+				 is_feature_model=False, 
+				 inference_rollout_depth=0, 
+				 inference_num_rollouts=0, 
+				 random_rollouts=False, 
+				 use_average_values=False):
 		self.name = name
 		self.game = game
 		self.model = model
 		self.use_features = is_feature_model
 		self.rollout_depth = inference_rollout_depth
 		self.num_rollouts = inference_num_rollouts
+		self.random_rollouts = random_rollouts
+		self.use_average_values = use_average_values
 
 
 	def select_move(self, print_debug=False):
 		if self.rollout_depth > 0 and self.num_rollouts > 0:
 			tree = GameNode(None, self.game, self.model, 0.25, 10.0, None, False)
 			for _ in range(self.num_rollouts):
-				tree.rollout(self.rollout_depth, self.rollout_depth, self.use_features)
-			move_vals = tree.get_probabilities()
+				tree.rollout(self.rollout_depth, self.rollout_depth, self.use_features, self.random_rollouts)
+			move_vals = tree.get_probabilities(use_average_values=self.use_average_values)
 			if print_debug:
+				average_outcomes = tree.get_average_outcomes()
+				outcome_probs = tree.get_probabilities(use_average_values=True)
 				counts = tree.get_visit_counts()
-				probs = tree.get_probabilities()
+				probs = tree.get_probabilities(use_average_values=False)
 				policy = self.model.policy(self.game.transform_state())
-				separator = '-'*(6*9)
-				blank = '////|'
-				move_str =   '   move |'
-				policy_str = ' policy |'
-				prob_str =   '  probs |' 
-				count_str =  ' visits |'
-				value_str =  '  value |' + '{:3.2f}'.format(self.model.value(self.game.transform_state()))
+				separator = '-'*(19+6*9)
+				blank = '/////|'
+				move_str =         '             move |'
+				policy_str =       '           policy |'
+				prob_str =         '      visit probs |' 
+				count_str =        '           visits |'
+				outcome_str =      ' average outcomes |'
+				outcome_prob_str = '    outcome probs |'
+				value_str =        '            value |' + '{:3.2f}'.format(self.model.value(self.game.transform_state()))
 				for i in range(9):
-					move_str += '{:4d}|'.format(i)
-					policy_str += blank if i not in probs else '{:4.2f}|'.format(policy[i])
-					prob_str += blank if i not in probs else '{:4.2f}|'.format(probs[i])
-					count_str += blank if i not in probs else '{:4d}|'.format(counts[i])
+					move_str += '{:5d}|'.format(i)
+					policy_str += blank if i not in probs else '{: 4.2f}|'.format(policy[i])
+					prob_str += blank if i not in probs else '{: 4.2f}|'.format(probs[i])
+					count_str += blank if i not in probs else '{:5d}|'.format(counts[i])
+					outcome_str += blank if i not in probs else '{: 4.2f}|'.format(average_outcomes[i])
+					outcome_prob_str += blank if i not in probs else '{: 4.2f}|'.format(outcome_probs[i])
 				print separator
 				print move_str
 				print policy_str
 				print count_str
 				print prob_str
+				print outcome_str
+				print outcome_prob_str
 				print separator
 				print value_str
 		else:
@@ -329,8 +357,8 @@ class RLAgent(object):
 					tree.expand()
 				else:
 					for _ in range(num_rollouts):
-						tree.rollout(rollout_depth, rollout_depth, self.use_features)
-					moves_and_probs = tree.get_probabilities().items()
+						tree.rollout(rollout_depth, rollout_depth, self.use_features, self.random_rollouts)
+					moves_and_probs = tree.get_probabilities(use_average_values=self.use_average_values).items()
 					selected_move = np.random.choice([x[0] for x in moves_and_probs], p=[x[1] for x in moves_and_probs])
 				opponent_to_move = not opponent_to_move
 				self.game.make_move(selected_move)
@@ -343,7 +371,7 @@ class RLAgent(object):
 				outcome = -1.0*outcome
 				# Set the illegal move probs to -1.
 				probs = -1*np.ones([self.game.board_size**2])
-				legal_probs = tree.get_probabilities()
+				legal_probs = tree.get_probabilities(use_average_values=self.use_average_values)
 				for move in legal_probs:
 					probs[move] = legal_probs[move]
 				tree = tree.parent
@@ -355,10 +383,10 @@ class RLAgent(object):
 	def train(self, num_epochs, games_per_epoch, rollouts_per_move, rollout_depth, evaluator):
 		random = agent_lib.RandomAgent('Random', self.game)
 		dumb = agent_lib.DumbAgent('Dumb', self.game)
-		#starting_t = 2
-		#final_t = 0.5
-		#starting_c_puct = 3.0
-		#final_c_puct = 0.5
+		starting_t = 1
+		final_t = 0.25
+		starting_c_puct = 10.0
+		final_c_puct = 10.0
 		for epoch in range(num_epochs):
 			print "Epoch", epoch+1, "of", num_epochs
 			t = 0.5#starting_t - (1+epoch)*((starting_t - final_t)/num_epochs)
@@ -381,16 +409,23 @@ def main():
 	b = agent_lib.DumbAgent('Dumb', g)
 	c = agent_lib.MinimaxAgent('Minimax', g)
 	rl = RLAgent('RL', g, TableModel(), inference_rollout_depth=7, inference_num_rollouts=400)
-	rl.train(4, 250, 400, 9, c)
-	print "Match with RandomAgent"
-	game_lib.play_match(g, rl, a, 1000, False, print_a_losses=True, evaluator=c)
-	print "Match with DumbAgent"
-	game_lib.play_match(g, rl, b, 2, False, evaluator=c)
-	print "Match with MinimaxAgent"
-	game_lib.play_match(g, rl, c, 100, False, print_a_losses=True, evaluator=c)
-	print "Match with self"
-	game_lib.play_match(g, rl, rl, 2, False, evaluator=c)
-	print "Match with you!"
+	rl.train(4, 500, 400, 9, c)
+	#for i in range(7):
+	#	print "ROLLOUT DEPTH: ", i
+	#	inr = 0 if i == 0 else 400
+	#	rl.rollout_depth = i
+	#	rl.num_rollouts = inr
+	#	print_losses = i > 5
+
+	#	print "Match with RandomAgent"
+	#	game_lib.play_match(g, rl, a, 1000, False, print_a_losses=print_losses, evaluator=c)
+	#	print "Match with DumbAgent"
+	#	game_lib.play_match(g, rl, b, 2, False, evaluator=c)
+	#	print "Match with MinimaxAgent"
+	#	game_lib.play_match(g, rl, c, 100, False, print_a_losses=print_losses, evaluator=c)
+	#	print "Match with self"
+	#	game_lib.play_match(g, rl, rl, 2, False, evaluator=c)
+	#	print "Match with you!"
 	game_lib.interactive_play(g, rl)
 
 main()
