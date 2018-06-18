@@ -2,64 +2,67 @@ from __future__ import division
 
 import numpy as np
 
-# An agent that makes completely random moves.
-class RandomAgent(object):
+import abstract
+
+class RandomAgent(abstract.Agent):
+	"""An agent that makes completely random moves."""
 	def __init__(self, name, game):
 		self.name = name
 		self.game = game
 
 	def select_move(self):
-		return np.random.choice(self.game.legal_moves())
+		return np.random.choice(self.game.available_actions())
 
-# An agent that picks the first legal move.
-class DumbAgent(object):
+class DumbAgent(abstract.Agent):
+	"""An agent that picks the first legal move."""
 	def __init__(self, name, game):
 		self.name = name
 		self.game = game
 
 	def select_move(self):
-		return self.game.legal_moves()[0]
+		return self.game.available_actions()[0]
 
-# An agent that plays optimally using minimax.
-class MinimaxAgent(object):
+class MinimaxAgent(abstract.Agent):
+	"""An agent that plays optimally using minimax."""
 	def __init__(self, name, game):
 		self.name = name
 		self.game = game
 		self.cache = {}
 
-	def select_move(self, print_debug=False):
-		v, moves = self.minimax(self.game)
-		if print_debug:
-			print 'Value: {} Optimal moves:'.format(v), sorted(moves)
+	def select_move(self):
+		_, moves = self.minimax()
 		return np.random.choice(moves)
 
-	def minimax(self, game):
+	def minimax(self):
+		"""Returns a tuple of the value of the current state and the optimal actions."""
 		# If this result is cached, immediately return it.
-		state = game.transform_state().tostring()
+		state = self.game.state_key()
 		if state in self.cache:
 			return self.cache[state]
 		# If the game is over, return the value of the result.
-		if self.game.is_game_over():
-			return self.game.value_mapping[game.winner], None
-		# Initialize the best value to effectively +/-infinity, and the best move to invalid.
-		best_value = -10.0 if game.first_player_to_move else 10.0
+		if self.game.result() is not None:
+			return self.game.result(), None
+		# Initialize the best value to +/-infinity.
+		best_value = -float('inf') if self.game.maximizer_to_act() else float('inf')
 		best_moves = []
-		for move in self.game.legal_moves():
+		for move in self.game.available_actions():
 			# Get the value of the subtree.
-			self.game.make_move(move)
-			value, _ = self.minimax(self.game)
-			self.game.undo_move()
-			change_detector = best_value
+			self.game.take_action(move)
+			value, _ = self.minimax()
+			self.game.undo_action()
+			old_best_value = best_value
 			# Keep track of the best move.
-			best_value = max(best_value, value) if game.first_player_to_move else min(best_value, value)
-			if change_detector != best_value:
+			best_value = max(best_value, value) if self.game.maximizer_to_act() else min(best_value, value)
+			if old_best_value != best_value:
 				best_moves = [move]
 			elif value == best_value:
 				best_moves.append(move)
-		if len(game.moves) < 4:
+		# Only cache part of the tree to save memory.
+		if len(self.game.moves) < 5:
 			self.cache[state] = (best_value, best_moves)
 		return best_value, best_moves
 
 	def optimal_moves(self):
-		_, moves = self.minimax(self.game)
+		"""Returns a list of the optimal actions in the current state."""
+		_, moves = self.minimax()
 		return moves

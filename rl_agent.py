@@ -1,66 +1,122 @@
+import collections
+import numpy as np
 
-class RLAgent(object):
-	def __init__(self, name, game, model):
+import abstract
+import agents as ag
+import game_tree as gt
+import tictactoe as ttt
+
+Config = collections.namedtuple('Config', ['training_epochs', # An integer, the number of epochs to train for.
+										   'games_per_epoch', # An integer, the number of games to simulate per epoch.
+										   'rollouts_per_move', # An integer, the number of rollouts to perform each move.
+										   'rollout_depth', # An integer, the maximum depth for each rollout.
+										   'rollout_policy', # Functions taking a dictionary of action indices->Actions and select an Action.
+										   'play_policy',
+										   'inference_policy',
+										   'opponent_rollout_policy', # Functions taking no arguments that select a legal move to play (or None for self-play).
+										   'opponent_play_policy', 
+										   'policy_target', # A function taking a dictionary of moves->Actions and outputting the learning target for the policy
+										   'inference_rollouts_per_move', # An integer, how many rollouts to do when selecting moves in matches (0 to use the raw policy).
+										   'inference_rollout_depth' # An integer, how deep the inference rollouts should be (0 to use the raw policy)
+										   ])
+
+
+class RLAgent(abstract.Agent):
+	def __init__(self, name, game, model, config, match_opponents=(), games_per_match=0, evaluator=None):
 		self.name = name
 		self.game = game
 		self.model = model
+		self.config = config
+		self.match_opponents = match_opponents
+		self.games_per_match = games_per_match
+		self.evaluator = evaluator
 
-	def select_move(self, print_policy=False):
-		legal_moves = self.game.legal_moves()
-		move_vals = self.model.policy(self.game.transform_state())
-		if print_policy:
-			self.game.print_board()
-			print 'Policy Probabilities', move_vals
-		best_move = -1
-		for move in legal_moves:
-			if best_move == -1 or move_vals[move] > move_vals[best_move]:
-				best_move = move
-		return best_move
+	# Helper function for transitioning between states in a simulated game.
+	def transition(self, states, selected_action):
+		"""Helper function for transitioning between states in a simulated game.
 
-	def generate_data(self, num_games, num_rollouts, rollout_depth, t, c_puct, opponent=None):
+		Args:
+			states: A map from state keys to visited State objects.
+			selected_action: The action to take.
+
+		Returns:
+			The new current state.
+		"""
+		self.game.take_action(selected_action.action if hasattr(selected_action, 'action') else selected_action)
+		new_state_key = self.game.state_key()
+		if new_state_key not in states:
+			return gt.State(states=states,
+							game=self.game,
+							model=self.model,
+							rollout_policy=self.config.rollout_policy,
+							opponent_rollout_policy=self.config.opponent_rollout_policy)
+		return states[new_state_key]
+
+	def simulate_game(self):
+		"""Simulates a single game, returning a list of (state, target value, target policy) tuples."""
+		self.game.reset()
+		states = {}
+		# If there's an opponent, they should start half the time.
+		if self.config.opponent_play_policy and np.random.choice([True, False]):
+			root = self.transition(states, self.config.opponent_play_policy())
+		else:
+			root = gt.State(states=states, 
+					 		game=self.game, 
+				 			model=self.model,
+				 			rollout_policy=self.config.rollout_policy,
+				 			opponent_rollout_policy=self.config.opponent_rollout_policy)
+		game_states = []
+		while not root.is_terminal:
+			game_states.append(root)
+			for _ in xrange(self.config.rollouts_per_move):
+				root.rollout(rollout_depth=self.config.rollout_depth, current_depth=0, rollout_actions=[])
+			selected_action = self.config.play_policy(root.actions)
+			root = self.transition(states, selected_action)
+			if self.config.opponent_play_policy and not root.is_terminal:
+				selected_action = self.config.opponent_play_policy()
+				root = self.transition(states, selected_action)
+		return zip([s.id for s in game_states], [root.terminal_value]*len(game_states), [self.config.policy_target(state.actions) for state in game_states])
+
+	def simulate_epoch(self, print_progress=False):
+		"""Returns the data collected from an epoch of game simulations."""
 		data = []
-		for sim in range(num_games):
-			if sim % 10 == 0:
-				print "Starting to simulate game", sim+1, "of", num_games
-			self.game.reset()
-			tree = GameNode(None, self.game, self.model, t, c_puct)
-			while not self.game.is_game_over():
-				for rollout in range(num_rollouts):
-					tree.rollout(rollout_depth, rollout_depth)
-				moves_and_probs = tree.get_probabilities().items()
-				selected_move = np.random.choice([x[0] for x in moves_and_probs], p=[x[1] for x in moves_and_probs])
-				self.game.make_move(selected_move)
-				tree = tree.children[selected_move]
-			outcome = self.game.value_mapping[self.game.winner]
-			tree = tree.parent
-			while tree is not None:
-				self.game.undo_move()
-				# Set the illegal move probs to -1.
-				probs = -1*np.ones([self.game.board_size**2])
-				legal_probs = tree.get_probabilities()
-				for move in legal_probs:
-					probs[move] = legal_probs[move]
-				data.append((self.game.transform_state(), outcome, probs))
-				tree = tree.parent
+		for game_number in xrange(self.config.games_per_epoch):
+			if print_progress and game_number % 10 == 1:
+				print 'Simulating game #{}'.format(game_number)
+			data.extend(self.simulate_game())
 		return data
 
-	def train(self, num_epochs, games_per_epoch, rollouts_per_move, rollout_depth):
-		random = agents.RandomAgent('Random', self.game)
-		dumb = agents.DumbAgent('Dumb', self.game)
-		minimax = agents.MinimaxAgent('Minimax', self.game)
-		starting_t = 2
-		final_t = 0.5
-		starting_c_puct = 3.0
-		final_c_puct = 0.5
-		for epoch in range(num_epochs):
-			print "Epoch", epoch+1, "of", num_epochs
-			t = starting_t - (1+epoch)*((starting_t - final_t)/num_epochs)
-			c_puct = starting_c_puct - (1+epoch)*((starting_c_puct - final_c_puct)/num_epochs)
-			print 't is', t, ', c_puct is', c_puct
-			play_match(self.game, self, random, 1000)
-			play_match(self.game, self, dumb, 4)
-			play_match(self.game, self, minimax, 4)
-			play_match(self.game, self, self, 100)
-			data = self.generate_data(games_per_epoch, rollouts_per_move, rollout_depth, t, c_puct)
+	def train(self, print_progress=False):
+		"""Trains the agent according to its config, updating its model."""
+		for _ in xrange(self.config.training_epochs):
+			data = self.simulate_epoch(print_progress=print_progress)
 			np.random.shuffle(data)
-			self.model.train(data, games_per_epoch)
+			self.model.train(data)
+			for opponent in self.match_opponents:
+				ttt.play_match(self.game, 
+							   self, 
+							   opponent, 
+							   num_games=self.games_per_match, 
+							   print_results=True, 
+							   evaluator=self.evaluator)
+
+	def select_move(self):
+		"""Selects the move to play at inference time.
+
+		Returns:
+			The action key of the action to be taken.
+		"""
+		states = {}
+		root = gt.State(states=states, 
+				 		game=self.game, 
+			 			model=self.model,
+			 			rollout_policy=self.config.rollout_policy,
+			 			opponent_rollout_policy=self.config.opponent_rollout_policy)
+		for _ in xrange(self.config.inference_rollouts_per_move):
+			root.rollout(self.config.inference_rollout_depth, current_depth=0, rollout_actions=[])
+		return self.config.inference_policy(root.actions).action
+
+
+
+
+	
