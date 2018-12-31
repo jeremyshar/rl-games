@@ -75,19 +75,22 @@ class TicTacToe(abstract.Game):
 			for j in range(self.board_size):
 				self.board[i][j][0] = self.empty
 
+	def state_shape(self):
+		return (self.board_size, self.board_size, 3)
+
 	# Convenience function to transform the board state into a stack of layers.
 	# The first layer is the locations of X, the second O, and the third is entirely
 	# 1.0 if it's O-to-move and 0.0 if it's X-to-move.
 	def state(self):
-		stack = np.zeros([self.board_size, self.board_size, 3])
+		stack = np.zeros(shape=self.state_shape())
 		if not self.first_player_to_move:
-			stack[2, :, :] = np.ones([self.board_size, self.board_size])
+			stack[:, :, 2] = 1.0
 		for i in range(self.board_size):
 			for j in range(self.board_size):
 				if self.board[i][j][0] == 'X':
-					stack[0][i][j] = 1.0
+					stack[i][j][0] = 1.0
 				elif self.board[i][j][0] == 'O':
-					stack[1][i][j] = 1.0
+					stack[i][j][1] = 1.0
 		return stack
 
 	def state_key(self):
@@ -106,105 +109,12 @@ class TicTacToe(abstract.Game):
 	def action_space(self):
 		return self.board_size*self.board_size
 
-# Infinite loop of play against an agent.
-def interactive_play(g, agent, print_policy=True, print_value=True):
-	game = 0
-	while True:
-		g.reset()
-		a_to_move = game % 2 == 0
-		print 'New game!', 'Agent moves first.' if a_to_move else 'You move first.'
-		while g.result() is None:
-			move = agent.select_move(print_debug=True) if a_to_move else raw_input('Select a move:')
-			try:
-				move = int(move)
-			except:
-				if move in ['q', 'quit']:
-					return
-				if move in ['r', 'resign']:
-					g.winner = 'resignation'
-					a_to_move = False
-					break
-				print 'Please input a valid legal index.'
-				continue
-			if move in g.available_actions():
-				g.take_action(move)
-				a_to_move = not a_to_move
-				g.print_state()
-				print
-		game += 1
-		if g.winner == '_':
-			print 'Game Drawn'
-		else:
-			if a_to_move:
-				print 'You win!'
-			else:
-				print agent.name, 'wins!'
+	def action_index(self, action):
+		return action
 
-# Runs a match between two agents.
-def play_match(g, 
-			   agent_a, 
-			   agent_b, 
-			   num_games, 
-			   print_games=False, 
-			   print_results=True, 
-			   print_a_losses=False, 
-			   evaluator=None):
-	results = {agent_a.name : 0, 
-			   agent_b.name : 0, 
-			   "Draws" : 0}
-	results_by_player = { 
-			   agent_a.name+'-O':0, 
-			   agent_a.name+'-X':0,
-			   agent_b.name+'-O':0, 
-			   agent_b.name+'-X':0}
-	if evaluator is not None:
-		optimality = {agent_a.name+'_optimal': 0,
-					  agent_a.name+'_suboptimal': 0, 
-					  agent_b.name+'_optimal': 0, 
-					  agent_b.name+'_suboptimal': 0}
- 	for game in range(num_games):
-		g.reset()
-		a_to_move = game % 2 == 0
-		if print_games:
-			x = agent_a.name if a_to_move else agent_b.name
-			o = agent_b.name if a_to_move else agent_a.name
-			print x, 'is playing as X - ', o, 'is playing as O'
-		moves = []
-		while g.result() is None:
-			move = agent_a.select_move() if a_to_move else agent_b.select_move()
-			if evaluator is not None:
-				optimal_moves = evaluator.optimal_moves()
-				key_prefix = agent_a.name if a_to_move else agent_b.name
-				if move in optimal_moves:
-					optimality[key_prefix+'_optimal'] += 1
-				else:
-					optimality[key_prefix+'_suboptimal'] += 1
-			moves.append(move)
-			g.take_action(move)
-			a_to_move = not a_to_move
-			if print_games:
-				g.print_state()
-				print
-		if g.winner == '_':
-			results["Draws"] += 1
-		else:
-			if a_to_move:
-				winning_agent = agent_b.name
-				if print_a_losses:
-					print agent_a.name, 'lost! Game:'
-					print moves
-			else:
-				winning_agent = agent_a.name
-			results[winning_agent] += 1
-			results_by_player[winning_agent+'-'+g.winner] +=1
-		if print_games:
-			print "Draw!" if g.winner == '_' else winning_agent + ' as ' + g.winner + ' WINS'
-	overall_results = sorted(results.items())
-	results_breakdown = sorted(results_by_player.items())
-	if print_results:
-		print 'Results for', num_games, 'game match between', agent_a.name, 'and', agent_b.name + ':'
-		print overall_results
-		print results_breakdown
-		if evaluator is not None:
-			print optimality
-	return overall_results, results_breakdown
+	def index_to_action(self, index):
+		return index
+
+	def parse_action(self, action_string):
+		return int(action_string)
+

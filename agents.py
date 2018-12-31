@@ -11,7 +11,9 @@ class RandomAgent(abstract.Agent):
 		self.game = game
 
 	def select_move(self):
-		return np.random.choice(self.game.available_actions())
+		actions = self.game.available_actions()
+		chosen_index = np.random.choice(len(actions))
+		return actions[chosen_index]
 
 class DumbAgent(abstract.Agent):
 	"""An agent that picks the first legal move."""
@@ -31,7 +33,8 @@ class MinimaxAgent(abstract.Agent):
 
 	def select_move(self):
 		_, moves = self.minimax()
-		return np.random.choice(moves)
+		chosen_index = np.random.choice(len(moves))
+		return moves[chosen_index]
 
 	def minimax(self):
 		"""Returns a tuple of the value of the current state and the optimal actions."""

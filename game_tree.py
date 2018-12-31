@@ -42,12 +42,12 @@ class State(object):
 		self.actions = {}
 		if not self.is_terminal:
 			action_priors = model.policy(self.id)
-			self.actions = {move: Action(before=self, 
+			self.actions = {self.game.action_index(move): Action(before=self, 
 									 	 after={},
-									 	 action=move, 
+									 	 action=self.game.action_index(move), 
 									     visit_count=0, 
 									     average_value=0,
-									     prior=action_priors[move], 
+									     prior=action_priors[self.game.action_index(move)], 
 									     for_maximizer=self.maximizer_to_act) for move in game.available_actions()}
 
 
@@ -92,13 +92,13 @@ class State(object):
 			self.backup(outcome, current_depth, rollout_actions)
 		else:
 			selected_action = self.rollout_policy(self.actions)
-			self.game.take_action(selected_action.action)
+			self.game.take_action(self.game.index_to_action(selected_action.action))
 			rollout_actions.append(selected_action)
 			if self.opponent_rollout_policy and self.game.result() is None:
 				opponent_action = self.opponent_rollout_policy()
 				if hasattr(opponent_action, 'action'):
 					opponent_action = opponent_action.action
-				self.game.take_action(opponent_action)
+				self.game.take_action(self.game.index_to_action(opponent_action))
 				current_depth += 1
 				# Append None to signify an opponent move.
 				rollout_actions.append(None)

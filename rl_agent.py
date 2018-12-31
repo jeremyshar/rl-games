@@ -3,8 +3,8 @@ import numpy as np
 
 import abstract
 import agents as ag
+import game_lib as gl
 import game_tree as gt
-import tictactoe as ttt
 
 Config = collections.namedtuple('Config', ['training_epochs', # An integer, the number of epochs to train for.
 										   'games_per_epoch', # An integer, the number of games to simulate per epoch.
@@ -31,7 +31,6 @@ class RLAgent(abstract.Agent):
 		self.games_per_match = games_per_match
 		self.evaluator = evaluator
 
-	# Helper function for transitioning between states in a simulated game.
 	def transition(self, states, selected_action):
 		"""Helper function for transitioning between states in a simulated game.
 
@@ -42,7 +41,7 @@ class RLAgent(abstract.Agent):
 		Returns:
 			The new current state.
 		"""
-		self.game.take_action(selected_action.action if hasattr(selected_action, 'action') else selected_action)
+		self.game.take_action(self.game.index_to_action(selected_action.action if hasattr(selected_action, 'action') else selected_action))
 		new_state_key = self.game.state_key()
 		if new_state_key not in states:
 			return gt.State(states=states,
@@ -86,19 +85,22 @@ class RLAgent(abstract.Agent):
 			data.extend(self.simulate_game())
 		return data
 
-	def train(self, print_progress=False):
+	def train(self, print_progress=False, save_data=False, load_data=False):
 		"""Trains the agent according to its config, updating its model."""
-		for _ in xrange(self.config.training_epochs):
-			data = self.simulate_epoch(print_progress=print_progress)
-			np.random.shuffle(data)
+		for e in xrange(self.config.training_epochs):
+			if load_data:
+				data = self.load_epoch('data/resampled_epoch_{}.txt'.format(e + 1))
+			else:
+				data = self.simulate_epoch(print_progress=print_progress)
+			if save_data and not load_data:
+				self.save_epoch('data/ml_epoch_{}.txt'.format(e), data)
 			self.model.train(data)
 			for opponent in self.match_opponents:
-				ttt.play_match(self.game, 
-							   self, 
-							   opponent, 
-							   num_games=self.games_per_match, 
-							   print_results=True, 
-							   evaluator=self.evaluator)
+				gl.play_match(self.game, 
+							  self, 
+							  opponent, 
+							  num_games=self.games_per_match,
+							  evaluator=self.evaluator)
 
 	def select_move(self):
 		"""Selects the move to play at inference time.
@@ -114,7 +116,23 @@ class RLAgent(abstract.Agent):
 			 			opponent_rollout_policy=self.config.opponent_rollout_policy)
 		for _ in xrange(self.config.inference_rollouts_per_move):
 			root.rollout(self.config.inference_rollout_depth, current_depth=0, rollout_actions=[])
-		return self.config.inference_policy(root.actions).action
+		return self.game.index_to_action(self.config.inference_policy(root.actions).action)
+
+	def save_epoch(self, filename, data):
+		with open(filename, 'w') as f:
+			for position, value, policy in data:
+				serialized_position = ','.join(['{:0.5f}' for i in range(27)]).format(*np.reshape(position, [-1]))
+				serialized_value = '{:0.5f}'.format(value)
+				serialized_policy = ','.join(['{:0.5f}' for i in range(9)]).format(*policy)
+				line = '{}|{}|{}\n'.format(serialized_position, serialized_value, serialized_policy)
+				f.write(line)
+
+	def load_epoch(self, filename):
+		def format_line(line):
+			pos, val, pol = line.split('|')
+			return (np.reshape(map(float, pos.split(',')), (3, 3, 3)), float(val), np.array(map(float, pol.split(','))))
+		with open(filename, 'r') as f:
+			return [format_line(line) for line in f.read().splitlines()]
 
 
 

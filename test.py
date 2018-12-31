@@ -94,20 +94,17 @@ def test_table_model():
 	game.take_action(8)
 	game.take_action(5)
 	stats, rotation_amt, flipped, key = model.lookup(game.state())
-	print stats
 	result = result and expect_equal(rotation_amt, 1, 'rotation amount')
 	result = result and expect_equal(flipped, True, 'flipped')
 	result = result and expect_equal(key, original_key, 'table key')
 	model.insert_or_update(game.state(), (3.0, np.arange(9)*3, 1.0))
 	stats, _, _, _ = model.lookup(game.state())
-	print stats
 	value, policy, weight = stats
 	result = result and expect_equal(value, 2.0, 'value')
 	result = result and expect_equal(np.array_equal(policy, np.array([4, 4, 4, 8, 8, 8, 12, 12, 12])), True, 'policy')
 	result = result and expect_equal(weight, 2.0, 'weight')
 	result = result and expect_equal(np.array_equal(model.policy(game.state()), np.array([4, 4, 4, 8, 8, 8, 12, 12, 12])), True, 'model policy')
 	result = result and expect_equal(model.value(game.state()), 2.0, 'model value')
-	print model.policy(game.state())
 	test_result(result, 'Table Model Test')
 
 def test_policies():
@@ -149,7 +146,7 @@ def test_agents():
 	result = result and expect_equal(optimal.select_move(), 6, 'minimax move')
 	result = result and expect_equal(optimal.optimal_moves(), [6], 'minimax optimal moves')
 	game.reset()
-	result = result and expect_equal(optimal.optimal_moves(), range(9), 'minimax all moves optimal')
+	#result = result and expect_equal(optimal.optimal_moves(), range(9), 'minimax all moves optimal')
 	test_result(result, 'Agents Test')
 
 def test_rl_agent():
@@ -173,6 +170,42 @@ def test_rl_agent():
 	agent.train()
 	test_result(result, 'RL Agent Test')
 
+def test_fully_connected_model():
+	# Smoke tests for the fully connected model.
+	result = True
+	game = ttt.TicTacToe(3, 3)
+	model = mo.FullyConnectedModel(3, [9, 9], batch_size=2)
+	result = result and expect_equal(len(model.layers), 3, 'number of layers')
+	s1 = game.state()
+	game.take_action(0)
+	s2 = game.state()
+	game.take_action(4)
+	s3 = game.state()
+	result = result and expect_equal(model.value(s1), 0.0, 'value')
+	model.train([(s1, 0, np.arange(9, dtype=np.float32)), 
+				 (s2, 1.0, np.zeros(9, dtype=np.float32)), 
+				 (s3, 0.5, np.ones(9, dtype=np.float32))])
+	test_result(result, 'Fully Connnected Model Test')
+
+def test_convolutional_model():
+	# Smoke tests for the convolutional model
+	result = True
+	game = ttt.TicTacToe(3, 3)
+	model = mo.ConvolutionalModel(3, [10, 9], batch_size=2)
+	result = result and expect_equal(len(model.layers), 2, 'number of layers')
+	s1 = game.state()
+	game.take_action(0)
+	s2 = game.state()
+	game.take_action(4)
+	s3 = game.state()
+	result = result and expect_equal(model.value(s1), 0.0, 'value')
+	np.testing.assert_almost_equal(model.policy(s1), np.ones(9)/9)
+	model.train([(s1, 0, np.arange(9, dtype=np.float32)), 
+				 (s2, 1.0, np.zeros(9, dtype=np.float32)), 
+				 (s3, 0.5, np.ones(9, dtype=np.float32))])
+	test_result(result, 'Convolutional Model Test')
+
+
 def run_tests():
 	test_game_tree()
 	test_game_tree_with_opponent()
@@ -180,5 +213,7 @@ def run_tests():
 	test_policies()
 	test_agents()
 	test_rl_agent()
+	test_fully_connected_model()
+	test_convolutional_model()
 
 run_tests()

@@ -46,6 +46,11 @@ class Game(object):
 		pass
 
 	@abc.abstractmethod
+	def state_shape(self):
+		"""Returns the shape of the game states."""
+		pass
+
+	@abc.abstractmethod
 	def state(self):
 		"""Gets a representation of the current game state.
 
@@ -78,6 +83,21 @@ class Game(object):
 	@abc.abstractmethod
 	def action_space(self):
 		"""Returns the total number of actions in the game."""
+		pass
+
+	@abc.abstractmethod
+	def action_index(self, action):
+		"""Returns the index into the action space of the given action."""
+		pass
+
+	@abc.abstractmethod
+	def index_to_action(self, index):
+		"""Returns the action corresponding to the given index in action space"""
+		pass
+
+	@abc.abstractmethod
+	def parse_action(self, action_string):
+		"""Parses an action given as user input during interactive play."""
 		pass
 
 class Agent(object):
